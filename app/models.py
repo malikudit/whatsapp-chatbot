@@ -1,23 +1,30 @@
-from app import db, _update_db, _delete_item
+from app import db
+from app import _update_db
+from app import _delete_item
 
+# database model for each individual user
 class User(db.Model):
     __tablename__ = "users"
 
     phone_number = db.Column(db.Text, primary_key=True)
     pincode = db.Column(db.Text())
+    name = db.Column(db.Text())
+    creating_orders = db.Column(db.Boolean)
+    # relationship because each user can be connected to multiple orders
     orders = db.relationship(
         "Order",
         backref = "user",
         primaryjoin = "User.phone_number == Order.user_id", 
     )
-    creating_orders = db.Column(db.Boolean)
-
+    
     def __init__(self, phone_number, name, pincode):
         self.phone_number = phone_number
         self.creating_orders = False
         self.pincode = pincode
+        self.name = name
 
 
+# database model for each individua order
 class Order(db.Model):
     __tablename__ = "orders"
 
