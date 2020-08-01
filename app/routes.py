@@ -5,6 +5,10 @@ from app import _update_db
 from app.models import User
 from app.models import Order
 from twilio.twiml.messaging_response import MessagingResponse
+import re
+import sqlite3
+import os
+import db_utils2
 
 
 # generic function to reply to user
@@ -15,11 +19,23 @@ def _send_message(output_lines):
     return str(resp)
 
 
+# connect to shopDb
+def db_connect(db_path):
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        return conn
+    except Error as e:
+        print(e)
+    return conn
+
+
+
 @app.route("/bot", methods=["POST"])
 def bot():
-    # global var to store order data
+    global i
     global content
-
+    
     incoming_msg = request.values.get("Body", "").strip().lower()
     remote_number = request.values.get("From", "")
     output_lines = []
@@ -48,11 +64,12 @@ def bot():
         if incoming_msg.startswith("create account"):
             message_parts = incoming_msg.split(" ")
             count = len(message_parts)
-            if count > 4 or count < 4:
+            if count > 4 or count < 4 or len(message_parts[3]) > 6 or len(message_parts[3]) < 6:
                 output_lines.append("Wrong format. Try again with the correct format 'create account NAME PINCODE")
                 return _send_message(output_lines)
 
             name = message_parts[2].strip()
+            name = name.capitalize()
             pincode = message_parts[3].strip()
             new_user = User(remote_number, name, pincode)
             _update_db(new_user)
@@ -89,6 +106,8 @@ def bot():
             return _send_message(output_lines)
 
 
+    # all code below accessible only to a user
+
     if not user.creating_orders:
         # reinitialising order as being empty
         content = []
@@ -98,6 +117,7 @@ def bot():
             user.creating_orders = True
             _update_db(user)
             return _send_message(output_lines)  
+
 
     # saving the order contents one by one
     if user.creating_orders:
@@ -117,20 +137,80 @@ def bot():
             content_string = ''.join(map(str, content))
             new_order = Order(user.phone_number, content_string)
             _update_db(new_order)
-            output_lines.append("Order created successfully. Please select your preferred shop now:")
-            if user.pincode == "110019":
-                output_lines.append(
-                    """
-                    \n1.Shop 1 - Rajkumar R.
-                    \n2. Shop 2 - Kumarraj K.
-                    \n3. Shop 3 - Caroline W.
-                    """
-                )
+            dir_path = "../admin/shopDb.db"
+            conn = db_connect(dir_path)
+
+            # connected to the database
+            if conn:
+                cur = conn.cursor()
+                sql = """SELECT * FROM shopDb WHERE shop_pincode=?"""
+                cur.execute(sql, (user.pincode,))
+                rows = cur.fetchall()
+                if not rows:
+                    output_lines.append("No shops available in your area, sorry!")
+                    i = 0
+                    conn.close()
+                    return _send_message(output_lines)
+                else:
+                    i = 0
+                    output_lines.append("Order created successfully. Please select your preferred shop now by typing the shop no: \n")
+                    for row in rows:
+                        i += 1
+                        output_lines.append("Shop " + str(i))
+                        output_lines.append("Shop Name: " + row[1])
+                        output_lines.append("Phone Number: " + str(row[0]))
+                        output_lines.append("Shopkeeper: " + row[2])
+                        output_lines.append("Pincode: " + row[3])
+                        output_lines.append("\n")
+                        conn.close()
+                    return _send_message(output_lines)    
+            
             else:
-                output_lines.append(
-                    "No shops available in your area :("
-                )
-            return _send_message(output_lines)
+                output_lines.append("Internal error: couldn't reach the database.")
+                return _send_message(output_lines)
+    
+    
+    if i != 0:
+        dir_path = "../admin/shopDb.db"
+        conn = db_connect(dir_path)
+        dir_path2 = "orderDb.db"
+        conn2 = db_connect(dir_path2)
+        for x in range(i):
+            if incoming_msg == str(x):
+
+                # confirming the shop
+                if conn:
+                    cur2 = conn.cursor()
+                    sql = """SELECT * FROM shopDb WHERE shop_pincode=?"""
+                    cur2.execute(sql, (user.pincode,))
+                    rows = cur2.fetchall()
+                    temp = 0
+                    for row in rows:
+                        temp += 1
+                        if temp == x:
+                            # shop confirmed, sending data to orderDb
+                            output_lines.append("Shop " + row[1] + " selected. Waiting for confirmation. Type 'check' to see order status.")
+                            db_utils2.insert_order(conn2, remote_number, row[0], content_string, True, False, "maybe")
+                            
+
+    if incoming_msg == "check":
+        dir_path2 = "orderDb.db"
+        conn2 = db_connect(dir_path2)
+        cur2 = conn.cursor()
+        sql2 = """SELECT * FROM shopDb WHERE cust_phone_no=?"""
+        cur2.execute(sql2, (remote_number,))
+        rows = cur2.fetchall()
+        for row in rows:
+            if row[6] == "maybe":
+                output_lines.append("Order hasn't been confirmed yet. Check again in a while!")
+                return _send_message(output_lines)
+            elif row[6] == "yes":
+                output_lines.append("Order confirmed! The price of the order is: " + row[4])
+            elif row[6] == "no":
+                output_lines.append("Order has been refused by the vendor.")
+                db_utils2.delete_order(conn2, (remote_number,))
+    
+
 
     # error handling
     output_lines.append("Sorry, I don't understand, please try again or text 'help'.")
